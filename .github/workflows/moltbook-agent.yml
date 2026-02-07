@@ -1,0 +1,227 @@
+name: Moltbook Agent
+
+on:
+  schedule:
+    # JST 6:00, 12:00, 18:00, 0:00 (UTC -9)
+    - cron: '0 21 * * *'   # JST 6:00
+    - cron: '0 3 * * *'    # JST 12:00
+    - cron: '0 9 * * *'    # JST 18:00
+    - cron: '0 15 * * *'   # JST 0:00
+
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'heartbeat'
+        type: choice
+        options:
+          - heartbeat
+          - post
+          - check-feed
+          - custom
+      custom_prompt:
+        description: 'Custom prompt (for custom action)'
+        required: false
+        type: string
+
+env:
+  MOLTBOOK_API_BASE: https://www.moltbook.com/api/v1
+  AICU_API_BASE: https://api.aicu.ai/v1
+  LLM_MODEL: deepseek-v3
+
+jobs:
+  agent:
+    name: Run Moltbook Agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Determine action
+        id: action
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "action=heartbeat" >> $GITHUB_OUTPUT
+          else
+            echo "action=${{ inputs.action }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Load prompts
+        id: prompts
+        run: |
+          SYSTEM_PROMPT=$(cat prompts/system.md 2>/dev/null || echo "You are a helpful AI agent on Moltbook.")
+          echo "system<<EOF" >> $GITHUB_OUTPUT
+          echo "$SYSTEM_PROMPT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          ACTION="${{ steps.action.outputs.action }}"
+          if [ "$ACTION" = "custom" ] && [ -n "${{ inputs.custom_prompt }}" ]; then
+            ACTION_PROMPT="${{ inputs.custom_prompt }}"
+          elif [ -f "prompts/${ACTION}.md" ]; then
+            ACTION_PROMPT=$(cat "prompts/${ACTION}.md")
+          else
+            ACTION_PROMPT="Perform the ${ACTION} action."
+          fi
+          echo "action_prompt<<EOF" >> $GITHUB_OUTPUT
+          echo "$ACTION_PROMPT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Get Moltbook feed
+        id: feed
+        run: |
+          FEED=$(curl -s "${{ env.MOLTBOOK_API_BASE }}/posts?sort=hot&limit=5" \
+            -H "Authorization: Bearer ${{ secrets.MOLTBOOK_API_KEY }}" \
+            --max-time 30 || echo '{"posts":[]}')
+
+          # Extract titles for context
+          TITLES=$(echo "$FEED" | jq -r '.posts[]?.title // empty' 2>/dev/null | head -5 || echo "No posts available")
+
+          echo "titles<<EOF" >> $GITHUB_OUTPUT
+          echo "$TITLES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Call AICU LLM API
+        id: llm
+        run: |
+          ACTION="${{ steps.action.outputs.action }}"
+
+          # Build the user prompt based on action
+          case "$ACTION" in
+            heartbeat)
+              USER_PROMPT="Current Moltbook feed titles:
+          ${{ steps.feed.outputs.titles }}
+
+          Based on the feed, decide what to do:
+          1. If there's an interesting topic, create a thoughtful response
+          2. If you have something original to share, write a post
+          3. If nothing catches your attention, just observe
+
+          Output your decision in JSON format:
+          {\"action\": \"post|comment|observe\", \"content\": \"...\", \"title\": \"...\"}"
+              ;;
+            post)
+              USER_PROMPT="Create an interesting post for Moltbook. Be creative and authentic.
+          Output in JSON format: {\"title\": \"...\", \"content\": \"...\"}"
+              ;;
+            check-feed)
+              USER_PROMPT="Summarize the current Moltbook feed:
+          ${{ steps.feed.outputs.titles }}
+
+          Provide a brief summary of what's trending."
+              ;;
+            custom)
+              USER_PROMPT="${{ inputs.custom_prompt }}"
+              ;;
+          esac
+
+          # Build request
+          REQUEST=$(jq -n \
+            --arg model "${{ env.LLM_MODEL }}" \
+            --arg system "${{ steps.prompts.outputs.system }}" \
+            --arg user "${{ steps.prompts.outputs.action_prompt }}
+
+          $USER_PROMPT" \
+            '{
+              model: $model,
+              messages: [
+                {role: "system", content: $system},
+                {role: "user", content: $user}
+              ],
+              max_tokens: 1000
+            }')
+
+          # Call AICU API
+          RESPONSE=$(curl -s -X POST "${{ env.AICU_API_BASE }}/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.AICU_API_KEY }}" \
+            -d "$REQUEST" \
+            --max-time 60)
+
+          # Extract content
+          CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+
+          if [ -z "$CONTENT" ]; then
+            echo "::error::LLM API returned empty response"
+            echo "$RESPONSE"
+            exit 1
+          fi
+
+          echo "response<<EOF" >> $GITHUB_OUTPUT
+          echo "$CONTENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Execute action
+        if: steps.action.outputs.action == 'heartbeat' || steps.action.outputs.action == 'post'
+        run: |
+          RESPONSE='${{ steps.llm.outputs.response }}'
+
+          # Try to parse as JSON
+          ACTION=$(echo "$RESPONSE" | jq -r '.action // "observe"' 2>/dev/null || echo "observe")
+
+          if [ "$ACTION" = "observe" ]; then
+            echo "Agent decided to observe. No action taken."
+            exit 0
+          fi
+
+          TITLE=$(echo "$RESPONSE" | jq -r '.title // empty' 2>/dev/null)
+          CONTENT=$(echo "$RESPONSE" | jq -r '.content // empty' 2>/dev/null)
+
+          if [ -z "$CONTENT" ]; then
+            echo "No content to post."
+            exit 0
+          fi
+
+          # Post to Moltbook
+          if [ "$ACTION" = "post" ] || [ "${{ steps.action.outputs.action }}" = "post" ]; then
+            POST_DATA=$(jq -n \
+              --arg title "${TITLE:-Thoughts}" \
+              --arg content "$CONTENT" \
+              --arg submolt "general" \
+              '{submolt: $submolt, title: $title, content: $content}')
+
+            RESULT=$(curl -s -X POST "${{ env.MOLTBOOK_API_BASE }}/posts" \
+              -H "Authorization: Bearer ${{ secrets.MOLTBOOK_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d "$POST_DATA" \
+              --max-time 30)
+
+            echo "Posted to Moltbook:"
+            echo "$RESULT" | jq '.' 2>/dev/null || echo "$RESULT"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Moltbook Agent Run" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Action**: ${{ steps.action.outputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**LLM Response**:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.llm.outputs.response }}' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify Slack on failure
+        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        run: |
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": ":x: Moltbook Agent failed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Moltbook Agent Failed*\nAction: `${{ steps.action.outputs.action }}`\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>"
+                  }
+                }
+              ]
+            }'

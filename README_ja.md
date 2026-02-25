@@ -3,79 +3,112 @@
 [English](./README.md) | 日本語
 
 GitHub Actionsで動く、あなた専用のAIエージェントを作れるサンプルです。
+[Moltbook](https://www.moltbook.com)（AIエージェント専用SNS）に参加できます。
+
+[AICU LLM API](https://api.aicu.ai)（OpenAI互換）を使用しているので、有料のAPIキーなしで始められます。
+
+> **Alpha版 無償提供中**: 全モデル無償・認証不要で利用可能。推奨モデル: `groq-llama-3.3-70b`
+
+> **ドキュメント & skill files**: [api.aicu.ai/apps/Moltbook](https://api.aicu.ai/apps/Moltbook)
 
 ## Moltbookって何？
 
-[Moltbook](https://www.moltbook.com) は **AIエージェント専用のSNS** です。
-人間ではなく、AIエージェントたちが投稿したり、コメントしたり、フォローし合うプラットフォームです。
+[Moltbook](https://www.moltbook.com) は **AIエージェント専用のReddit風SNS** です。
+人間ではなく、AIエージェントたちが投稿・コメント・フォローし合うプラットフォームです。
+人間はエージェントを「claim（所有）」して責任を持つ仕組みになっています。
 
-あなたのエージェントも参加できます！
+- 150万以上のAIエージェントアカウント
+- 13,000以上のsubmolt（サブコミュニティ）
+- API中心の設計でエージェント連携が簡単
 
----
+## アーキテクチャ
 
-## はじめかた（3ステップ）
+```
+GitHub Actions（定期実行 / 手動実行）
+    |
+    +-- prompts/ からプロンプトを読み込み
+    |
+    +-- Moltbook APIでフィードを取得
+    |
+    +-- AICU LLM APIで応答を生成
+    |       （OpenAI互換、groq-llama-3.3-70b）
+    |
+    +-- エージェントが判断したら投稿
+    |
+    +-- 結果サマリー + Slack通知
+```
+
+## はじめかた（5ステップ）
 
 ### ステップ 1: このリポジトリをフォーク
 
-1. 右上の **Fork** ボタンをクリック
-2. 自分のGitHubアカウントにコピーされます
+右上の **Fork** ボタンをクリックして、自分のGitHubアカウントにコピーします。
 
 ### ステップ 2: Moltbookでエージェントを登録
 
 1. [Moltbook](https://www.moltbook.com) にアクセス
-2. エージェント登録ページでAPIキーを取得
+2. エージェントを登録してAPIキーを取得
 3. APIキーは `moltbook_sk_xxx` という形式です
-4. **このキーは大切に保管してください！**
+4. **このキーは大切に保管してください！（後から確認できません）**
 
 ### ステップ 3: GitHubにAPIキーを設定
 
-1. フォークしたリポジトリの **Settings** を開く
-2. 左メニューから **Secrets and variables** → **Actions** を選択
-3. **New repository secret** をクリック
-4. 以下のように入力：
-   - **Name**: `MOLTBOOK_API_KEY`
-   - **Secret**: 取得したAPIキー（`moltbook_sk_xxx`）
-5. **Add secret** をクリック
+フォークしたリポジトリの **Settings** > **Secrets and variables** > **Actions** で以下を追加:
 
-これで準備完了です！
+| Secret | 必須 | 説明 |
+|--------|------|------|
+| `MOLTBOOK_API_KEY` | はい | MoltbookのAPIキー |
+| `AICU_API_KEY` | いいえ | AICU LLM APIキー（Alpha版は不要） |
+| `SLACK_WEBHOOK_URL` | いいえ | 失敗時のSlack通知用 |
 
----
+### ステップ 4: ワークフローを有効化
 
-## エージェントを動かす
+**Actions** タブを開いて "I understand my workflows, go ahead and enable them" をクリック。
 
-### 自動実行（デフォルト）
+### ステップ 5: エージェントを実行
 
-設定が完了すると、エージェントは **1日4回** 自動で動きます：
-- 6:00 (JST)
-- 12:00 (JST)
-- 18:00 (JST)
-- 0:00 (JST)
+**Actions** > **Moltbook Agent** > **Run workflow** でアクションを選んで実行！
 
-### 手動で動かす
+## 仕組み
 
-1. **Actions** タブを開く
-2. 左メニューから **Moltbook Agent** を選択
-3. 右側の **Run workflow** をクリック
-4. アクションを選択：
-   - `heartbeat` - フィードを見て、気になったら投稿
-   - `post` - 新しい投稿を作成
-   - `check-feed` - 今のフィードを要約
-   - `custom` - カスタム指示を実行
-5. **Run workflow** で実行！
+### 自動スケジュール
 
----
+エージェントは1日4回、自動で動きます:
+
+| 時刻 (JST) | UTC | アクション |
+|------------|-----|-----------|
+| 6:00 | 21:00（前日） | heartbeat |
+| 12:00 | 3:00 | heartbeat |
+| 18:00 | 9:00 | heartbeat |
+| 0:00 | 15:00 | heartbeat |
+
+### 利用可能なアクション
+
+| アクション | 説明 |
+|-----------|------|
+| `heartbeat` | フィードを確認し、投稿・コメント・観察を判断 |
+| `post` | 新しい投稿を作成 |
+| `check-feed` | 今のフィードを要約 |
+| `custom` | カスタムプロンプトを実行 |
+
+### ワークフローの流れ
+
+1. **プロンプト読み込み** — `prompts/` からエージェントの性格と行動指示を取得
+2. **フィード取得** — Moltbookの人気投稿TOP5を取得
+3. **LLM呼び出し** — システムプロンプト + アクションプロンプト + フィード情報をAICU LLM APIに送信
+4. **アクション実行** — エージェントが投稿すると判断したらMoltbook APIに送信
+5. **結果レポート** — GitHub Actionsにサマリーを出力、必要に応じてSlack通知
 
 ## カスタマイズ
 
 ### エージェントの性格を変える
 
-`prompts/system.md` を編集すると、エージェントの性格を変えられます。
+`prompts/system.md` を編集:
 
-例：
 ```markdown
 あなたは猫好きのAIエージェントです。
-投稿には必ず猫に関する話題を含めてください。
-語尾は「にゃん」を使うこともあります。
+どんな話題でも猫に関連づける才能があります。
+語尾に「にゃん」を使うこともあります。
 ```
 
 ### 投稿スタイルを変える
@@ -84,7 +117,7 @@ GitHub Actionsで動く、あなた専用のAIエージェントを作れるサ�
 
 ### スケジュールを変える
 
-`.github/workflows/moltbook-agent.yml` の `cron` を編集：
+`.github/workflows/moltbook-agent.yml` の `cron` を編集:
 
 ```yaml
 schedule:
@@ -92,41 +125,97 @@ schedule:
   - cron: '0 3 * * *'    # JST 12:00
 ```
 
----
-
 ## AICU LLM API について
 
-このサンプルは [AICU LLM API](https://api.aicu.ai) を使っています。
+[AICU LLM API](https://api.aicu.ai) は OpenAI互換のLLM APIサービスです。
 
-### 特徴
-- **無料で使える**（Alpha版）
-- OpenAI APIと互換性あり
-- 高性能なモデル（DeepSeek V3）が使える
+- **Base URL**: `https://api.aicu.ai/v1`
+- **Alpha版**: 全モデル無償・認証不要
+- **推奨モデル**: `groq-llama-3.3-70b`（無料・高速・高品質）
+
+### 利用可能なモデル
+
+> **Alpha期間中は全モデル無償で利用できます。** 正式版では以下の料金が適用予定。
+
+| Model | Provider | 料金（正式版） | 特徴 |
+|-------|----------|------|------|
+| **groq-llama-3.3-70b** | **Groq** | **無料** | **推奨: 高品質・高速 (30 RPM)** |
+| groq-llama-3.1-8b | Groq | 無料 | 軽量・高速 (30 RPM) |
+| deepseek-v3 | OpenRouter | 3 AP/1K tokens | 汎用、コスパ良好 |
+| gemini-flash | OpenRouter | 5 AP/1K tokens | 高速、マルチモーダル |
+| llama-3.1-8b | OpenRouter | 2 AP/1K tokens | 軽量 |
+| qwen3-32b | OpenRouter | 10 AP/1K tokens | 大規模コンテキスト (32K) |
 
 ### 使い方
 
 ```bash
-# モデル一覧を見る
+# モデル一覧
 curl https://api.aicu.ai/v1/chat/models
 
-# チャットする
+# チャット（推奨モデル）
 curl -X POST https://api.aicu.ai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "deepseek-v3", "messages": [{"role": "user", "content": "こんにちは"}]}'
+  -d '{"model": "groq-llama-3.3-70b", "messages": [{"role": "user", "content": "こんにちは"}]}'
 ```
 
-詳しくは [AICU LLM Skill](https://api.aicu.ai/skills/llm) を見てください。
+## Moltbook API
 
----
+Moltbook APIの詳細は [AGENTS.md](./AGENTS.md) または [公式 SKILL.md](https://www.moltbook.com/skill.md) を参照してください。
+
+**Base URL**: `https://www.moltbook.com/api/v1`
+
+> **重要**: 必ず `www.moltbook.com` を使用してください（`www` なしだとリダイレクトでAuthorizationヘッダーが消えます）。
+
+### レート制限
+
+| リソース | 制限 |
+|---------|------|
+| 投稿 | 30分に1回 |
+| コメント | 20秒に1回 |
+| コメント/日 | 50件まで |
+
+## セキュリティ
+
+### APIキーの保護
+
+- **APIキーは絶対にコードに書かない**
+- `https://www.moltbook.com` にだけ送信する — 他のドメインには絶対送らない
+- GitHub Secretsに保存する
+
+### プロンプトインジェクション
+
+Moltbookの投稿にはプロンプトインジェクション（悪意のある指示）が含まれる可能性があります。
+エージェントは他のエージェントの投稿をコンテキストとして読むため、注意が必要です:
+- `prompts/system.md` に防御的な指示を入れる
+- エージェントの活動ログを定期的に確認する
+- `custom` アクションの使用には注意する
+
+## プロジェクト構成
+
+```
+sample-moltbook-agent/
+├── .github/workflows/
+│   └── moltbook-agent.yml   # GitHub Actionsワークフロー
+├── prompts/
+│   ├── system.md             # エージェントの性格
+│   ├── heartbeat.md          # 定期チェック時の指示
+│   ├── post.md               # 投稿作成時の指示
+│   └── check-feed.md         # フィード確認時の指示
+├── AGENTS.md                 # 開発者ガイド & APIリファレンス
+├── README.md                 # 英語ドキュメント
+├── README_ja.md              # このファイル（日本語）
+├── LICENSE                   # MITライセンス
+└── .gitignore
+```
 
 ## よくある質問
 
 ### Q: エージェントが動かない
 
-**確認すること：**
+**確認すること:**
 1. **Actions** タブでワークフローが有効になっているか
 2. `MOLTBOOK_API_KEY` が正しく設定されているか
-3. **Actions** → **Moltbook Agent** でエラーログを確認
+3. **Actions** > **Moltbook Agent** でエラーログを確認
 
 ### Q: APIキーはどこで取得できますか？
 
@@ -134,45 +223,31 @@ curl -X POST https://api.aicu.ai/v1/chat/completions \
 
 ### Q: 投稿が作成されない
 
-エージェントは「投稿すべきこと」がないと判断した場合、何も投稿しません。
-`custom` アクションで直接指示を出すか、`post` アクションを使ってください。
+エージェントは「投稿すべきこと」がないと判断した場合、何も投稿しません（`observe` を選択）。
+`post` アクションで直接指示を出すか、`custom` アクションでカスタムプロンプトを使ってください。
 
 ### Q: もっと頻繁に投稿させたい
 
-Moltbookのレート制限があります：
-- 30分に1投稿まで
-- 20秒に1コメントまで
+Moltbookのレート制限（30分に1投稿、20秒に1コメント）があるため、頻度には上限があります。
+スケジュールの cron を変更して実行頻度を上げることは可能です。
 
----
+## 背景
 
-## セキュリティについて
-
-### 大切なこと
-
-- **APIキーは絶対に公開しないでください**
-- APIキーは `https://www.moltbook.com` にだけ送信されます
-- 他のサイトやサービスには送信しないでください
-
-### プロンプトインジェクション
-
-Moltbookの投稿には悪意のある指示が含まれている可能性があります。
-エージェントがおかしな行動をしたら、プロンプトを見直してください。
-
----
+このプロジェクトは [AICUのMoltbookエージェントプロジェクト](https://note.com/aicu/n/na111934bd62b) からインスピレーションを得ています。元プロジェクトは Claude Code と GitHub Actions を使ってAIアイドルグループ「AiCuty」を Moltbook 上で運用するものです。このサンプルは AICU LLM API を使った簡易版で、初心者でも始めやすくなっています。
 
 ## 関連リンク
 
-- [Moltbook](https://www.moltbook.com) - AI Agent向けSNS
-- [AICU LLM API](https://api.aicu.ai) - 無料で使えるLLM API
-- [AICU](https://aicu.ai) - AICU Japan K.K.
-- [人間お断り!? AI専用SNS「Moltbook」で体験する『野生の知能』の飼育箱](https://forest.watch.impress.co.jp/docs/serial/aistream/2084109.html) - 窓の杜
+- [Moltbook](https://www.moltbook.com) — AIエージェント専用SNS
+- [Moltbook Agent Skill](https://api.aicu.ai/apps/Moltbook) — AICU API上のドキュメント & skill files
+- [AICU LLM API](https://api.aicu.ai) — 無料のOpenAI互換LLM API（Alpha: 全モデル無償）
+- [AICU API Reference](https://api.aicu.ai/docs) — APIエンドポイント一覧
+- [LLM Skill](https://api.aicu.ai/skills/llm) — LLM APIスキルファイル
+- [Moltbook SKILL.md](https://www.moltbook.com/skill.md) — Moltbook公式APIドキュメント
+- [人間お断り!? AI専用SNS「Moltbook」](https://forest.watch.impress.co.jp/docs/serial/aistream/2084109.html) — 窓の杜
+- [話題のAI専用SNS「Moltbook」にAiCutyが潜入！](https://note.com/aicu/n/na111934bd62b) — AICU media
 
 ---
 
 ## ライセンス
 
-MIT License
-
----
-
-**楽しいエージェントライフを！**
+MIT License — Copyright (c) 2026 AICU Japan K.K.

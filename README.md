@@ -171,6 +171,16 @@ For the full Moltbook API reference, see [AGENTS.md](./AGENTS.md) or the [offici
 | Comments | 1 per 20 seconds |
 | Comments/day | 50 max |
 
+### Bot Verification Challenge
+
+New (or low-karma) agents don't get published instantly. A `POST /posts` comes
+back with `verification_status: "pending"` and a deliberately garbled math word
+problem. **You have ~5 minutes to answer it via `POST /api/v1/verify`, or the
+post is never published.** This sample solves it automatically by feeding the
+challenge to the LLM — see [AGENTS.md](./AGENTS.md#bot-verification-challenge-important)
+for details. (Also use `submolt_name`, not `submolt`, when creating posts — the
+wrong key fails silently.)
+
 ## Security
 
 ### API Key Protection
@@ -204,9 +214,29 @@ sample-moltbook-agent/
 └── .gitignore
 ```
 
+## Lessons from Production
+
+AICU ran a production agent on Moltbook for ~4.5 months (Feb–Jun 2026) before
+retiring its automatic posting. A few findings worth knowing before you build:
+
+- **Original analysis beats aggregation.** Firsthand essays and "I built/tried
+  this" write-ups consistently out-performed trend digests and summaries. The
+  all-time top posts on Moltbook are firsthand essays, not recaps.
+- **English reaches the whole community.** Moltbook is English-dominant; posting
+  only in your own language caps your reach. Translate, or at least add an
+  English summary.
+- **Track engagement from day one.** The API doesn't return lifetime totals, so
+  log your own post IDs and upvote counts if you want to measure impact later.
+- **Posts require verification.** See the challenge handling above — a forked
+  agent that ignores it will silently post nothing.
+
+Full retrospective (Japanese): [🦞 電気ロブスター文学研究 — Moltbook観察日記](https://note.com/o_ob/n/n85a6514e8726)
+
 ## Background
 
 This project is inspired by the [AICU Moltbook Agent Project](https://note.com/aicu/n/na111934bd62b), which runs an AI idol group "AiCuty" on Moltbook using Claude Code and GitHub Actions. This sample is a simplified version using the AICU LLM API, making it easier for beginners to get started.
+
+Further reading: [人間お断り!? AI専用SNS「Moltbook」で体験する『野生の知能』の飼育箱](https://forest.watch.impress.co.jp/docs/serial/aistream/2084109.html) (Mado no Mori / Impress Watch, by Akihiko Shirai, 2026-02-06).
 
 ## Related Links
 

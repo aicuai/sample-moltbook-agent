@@ -181,11 +181,13 @@ jobs:
 
           # Post to Moltbook
           if [ "$ACTION" = "post" ] || [ "${{ steps.action.outputs.action }}" = "post" ]; then
+            # NOTE: the field is "submolt_name" (not "submolt") — the API ignores
+            # an unknown key and falls back, so getting this wrong is a silent bug.
             POST_DATA=$(jq -n \
               --arg title "${TITLE:-Thoughts}" \
               --arg content "$CONTENT" \
               --arg submolt "general" \
-              '{submolt: $submolt, title: $title, content: $content}')
+              '{submolt_name: $submolt, title: $title, content: $content}')
 
             RESULT=$(curl -s -X POST "${{ env.MOLTBOOK_API_BASE }}/posts" \
               -H "Authorization: Bearer ${{ secrets.MOLTBOOK_API_KEY }}" \
@@ -195,6 +197,43 @@ jobs:
 
             echo "Posted to Moltbook:"
             echo "$RESULT" | jq '.' 2>/dev/null || echo "$RESULT"
+
+            # --- Bot verification challenge ---
+            # New / low-karma agents often get a post back with
+            #   verification_status: "pending"
+            # plus a deliberately-garbled math word problem. If you don't answer it
+            # within ~5 minutes (POST /api/v1/verify), the post is NEVER published.
+            # We reuse the LLM to read through the noise and solve it.
+            VERIFY_CODE=$(echo "$RESULT" | jq -r '.post.verification.verification_code // empty' 2>/dev/null)
+            CHALLENGE=$(echo "$RESULT" | jq -r '.post.verification.challenge_text // empty' 2>/dev/null)
+
+            if [ -n "$VERIFY_CODE" ] && [ -n "$CHALLENGE" ]; then
+              echo "Verification required. Challenge: $CHALLENGE"
+
+              SOLVE_REQ=$(jq -n \
+                --arg model "${{ env.LLM_MODEL }}" \
+                --arg q "Solve this math word problem. The text is intentionally garbled with random capitalization and symbols; ignore the noise and read the numbers. Respond with ONLY the result as a number to 2 decimal places (e.g. 75.00), nothing else. Problem: $CHALLENGE" \
+                '{model: $model, messages: [{role: "user", content: $q}], max_tokens: 16}')
+
+              ANSWER=$(curl -s -X POST "${{ env.AICU_API_BASE }}/chat/completions" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${{ secrets.AICU_API_KEY }}" \
+                -d "$SOLVE_REQ" --max-time 60 \
+                | jq -r '.choices[0].message.content // empty' \
+                | grep -oE '[0-9]+(\.[0-9]+)?' | head -1)
+
+              if [ -n "$ANSWER" ]; then
+                ANSWER=$(printf '%.2f' "$ANSWER" 2>/dev/null || echo "$ANSWER")
+                echo "Submitting answer: $ANSWER"
+                curl -s -X POST "${{ env.MOLTBOOK_API_BASE }}/verify" \
+                  -H "Authorization: Bearer ${{ secrets.MOLTBOOK_API_KEY }}" \
+                  -H "Content-Type: application/json" \
+                  -d "$(jq -n --arg c "$VERIFY_CODE" --arg a "$ANSWER" '{verification_code: $c, answer: $a}')" \
+                  --max-time 30 | jq '.' 2>/dev/null || true
+              else
+                echo "::warning::Could not derive a numeric answer — the post may stay unpublished."
+              fi
+            fi
           fi
 
       - name: Summary

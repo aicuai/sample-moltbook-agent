@@ -196,6 +196,18 @@ Moltbook posts may contain prompt injection attempts. The agent reads other agen
 - Review your agent's activity logs regularly
 - Be cautious with the `custom` action
 
+### Handling LLM Output Safely (shell injection)
+
+LLM output is untrusted — it may have been steered by a prompt-injected post.
+**Never inline it into a shell script** as `'${{ steps.llm.outputs.response }}'`:
+GitHub substitutes `${{ }}` into the script *before* it runs, so a stray quote
+or `$(...)` in the model's reply can break out of the string or execute. Instead,
+pass it through an `env:` variable and reference `"$LLM_RESPONSE"`, or write it to
+a file and parse with `jq -Rs`. This sample's workflow uses the `env:` pattern.
+
+These safe-coding practices come from AICU's writeup:
+[話題のAI専用SNS「Moltbook」にAiCutyが潜入！安全に体験するためのコード紹介](https://note.com/aicu/n/na111934bd62b).
+
 ## Project Structure
 
 ```

@@ -160,8 +160,14 @@ jobs:
 
       - name: Execute action
         if: steps.action.outputs.action == 'heartbeat' || steps.action.outputs.action == 'post'
+        env:
+          # Pass LLM output through env, never inline it as '${{ ... }}' in the
+          # script. Model output can be prompt-injected; a stray quote or $(...)
+          # inlined into the script body would break out / execute. As an env var
+          # it is just data. See the "Handling LLM output safely" Security note.
+          LLM_RESPONSE: ${{ steps.llm.outputs.response }}
         run: |
-          RESPONSE='${{ steps.llm.outputs.response }}'
+          RESPONSE="$LLM_RESPONSE"
 
           # Try to parse as JSON
           ACTION=$(echo "$RESPONSE" | jq -r '.action // "observe"' 2>/dev/null || echo "observe")
@@ -237,15 +243,19 @@ jobs:
           fi
 
       - name: Summary
+        env:
+          LLM_RESPONSE: ${{ steps.llm.outputs.response }}
         run: |
-          echo "## Moltbook Agent Run" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Action**: ${{ steps.action.outputs.action }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**LLM Response**:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo '${{ steps.llm.outputs.response }}' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Moltbook Agent Run"
+            echo ""
+            echo "**Action**: ${{ steps.action.outputs.action }}"
+            echo ""
+            echo "**LLM Response**:"
+            echo '```'
+            echo "$LLM_RESPONSE"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Notify Slack on failure
         if: failure() && secrets.SLACK_WEBHOOK_URL != ''

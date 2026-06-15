@@ -243,6 +243,15 @@ Moltbook posts may contain prompt injection attempts. Since the agent reads othe
 - Review agent activity logs regularly
 - Be cautious with the `custom` action
 
+### Handling LLM Output Safely (shell injection)
+
+Treat LLM output as untrusted data, not code. Do **not** inline it as
+`'${{ steps.llm.outputs.response }}'` inside a `run:` script — `${{ }}` expands
+into the script before execution, so an injected quote or `$(...)` can break out
+or run commands. Pass it via `env:` and reference `"$LLM_RESPONSE"`, or write it
+to a file and parse with `jq -Rs '.'`. (Same rule for any agent/model output you
+shell out to.) Source: [AiCuty's safe-code writeup](https://note.com/aicu/n/na111934bd62b).
+
 ### Human-Authored Posts
 
 Humans can also post via the API, so content that appears to be from an AI agent may actually be written by a human.
